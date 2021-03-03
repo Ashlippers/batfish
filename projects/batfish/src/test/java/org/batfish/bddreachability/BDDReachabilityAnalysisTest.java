@@ -2,6 +2,7 @@ package org.batfish.bddreachability;
 
 import static org.batfish.bddreachability.BDDReachabilityUtils.computeForwardEdgeTable;
 import static org.batfish.bddreachability.BDDReachabilityUtils.fixpoint;
+import static org.batfish.bddreachability.BDDReachabilityUtils.prunedFixpoint;
 import static org.batfish.bddreachability.BDDReachabilityUtils.toIngressLocation;
 import static org.batfish.bddreachability.TestNetwork.DST_PREFIX_1;
 import static org.batfish.bddreachability.TestNetwork.DST_PREFIX_2;
@@ -46,6 +47,8 @@ import org.batfish.main.BatfishTestUtils;
 import org.batfish.specifier.InterfaceLinkLocation;
 import org.batfish.specifier.InterfaceLocation;
 import org.batfish.specifier.IpSpaceAssignment;
+import org.batfish.symbolic.dfa.Dfa;
+import org.batfish.symbolic.dfa.DfaState;
 import org.batfish.symbolic.state.Accept;
 import org.batfish.symbolic.state.DropNoRoute;
 import org.batfish.symbolic.state.InterfaceAccept;
@@ -661,4 +664,56 @@ public final class BDDReachabilityAnalysisTest {
                   c, start)));
     }
   }
+
+  @Test
+  public void testPrunedFixpoint() {
+    StateExpr a = new NodeAccept("A");
+    StateExpr b = new NodeAccept("B");
+    StateExpr c = new NodeAccept("C");
+
+    BDD start = PKT.getSrcPort().value(1);
+    BDD bddAB = PKT.getDstIp().value(1);
+    BDD bddBC = PKT.getSrcIp().value(1);
+
+    Edge edgeAB = new Edge(a, b, bddAB);
+    Edge edgeBC = new Edge(b, c, bddBC);
+
+    Table<StateExpr, StateExpr, Transition> forwardEdges =
+        computeForwardEdgeTable(ImmutableList.of(edgeAB, edgeBC));
+    // Table<StateExpr, StateExpr, Transition> reverseEdges = Tables.transpose(forwardEdges);
+
+    Dfa<StateExpr> dfa = new Dfa<>();
+    DfaState atA = new DfaState(1);
+    DfaState atB = new DfaState(2);
+    DfaState atC = new DfaState(3, true, true);
+    dfa.states.add(atA);
+    dfa.states.add(atB);
+    dfa.states.add(atC);
+    dfa.edges.put(DfaState.StartState(), a, atA);
+    dfa.edges.put(atA, b, atB);
+    dfa.edges.put(atB, c, atC);
+
+    // forward from a
+    {
+      Map<StateExpr, BDD> forwardReachability = new HashMap<>();
+      forwardReachability.put(a, start);
+      prunedFixpoint(forwardReachability, forwardEdges, Transition::transitForward, dfa);
+      assertThat(
+          forwardReachability,
+          equalTo(
+              ImmutableMap.of(
+                  // a, start, //
+                  // b, start.and(bddAB), //
+                  c, start.and(bddAB).and(bddBC))));
+    }
+
+    // forward from c
+    {
+      Map<StateExpr, BDD> forwardReachability = new HashMap<>();
+      forwardReachability.put(c, start);
+      prunedFixpoint(forwardReachability, forwardEdges, Transition::transitForward, dfa);
+      assertThat(forwardReachability, equalTo(ImmutableMap.of()));
+    }
+  }
+
 }

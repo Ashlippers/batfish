@@ -15,10 +15,13 @@ import io.opentracing.Span;
 import io.opentracing.util.GlobalTracer;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.BiFunction;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import javax.annotation.Nullable;
 import net.sf.javabdd.BDD;
 import org.batfish.bddreachability.transition.Transition;
 import org.batfish.bddreachability.transition.Transitions;
@@ -29,6 +32,10 @@ import org.batfish.datamodel.Flow;
 import org.batfish.datamodel.Flow.Builder;
 import org.batfish.datamodel.transformation.AssignPortFromPool;
 import org.batfish.symbolic.IngressLocation;
+import org.batfish.symbolic.dfa.CombinedState;
+import org.batfish.symbolic.dfa.Dfa;
+import org.batfish.symbolic.dfa.DfaState;
+import org.batfish.symbolic.state.NodeAccept;
 import org.batfish.symbolic.state.OriginateInterfaceLink;
 import org.batfish.symbolic.state.OriginateVrf;
 import org.batfish.symbolic.state.StateExpr;
@@ -93,6 +100,94 @@ public final class BDDReachabilityUtils {
 
         dirtyStates = newDirtyStates;
       }
+    } finally {
+      span.finish();
+    }
+  }
+
+  @Nullable private static CombinedState computeInitState(Dfa<StateExpr> dfa, StateExpr state) {
+    if (state instanceof NodeAccept) {
+      Optional<DfaState> result = dfa.transit(DfaState.StartState(), state);
+      return result.map(dfaState -> new CombinedState(state, dfaState)).orElse(null);
+    }
+    return new CombinedState(state, DfaState.StartState());
+  }
+
+  @VisibleForTesting
+  static void prunedFixpoint(
+      Map<StateExpr, BDD> reachableSets,
+      Table<StateExpr, StateExpr, Transition> edges,
+      BiFunction<Transition, BDD, BDD> traverse,
+      Dfa<StateExpr> dfa) {
+    Span span = GlobalTracer.get().buildSpan("BDDReachabilityAnalysis.prunedFixpoint").start();
+    try (Scope scope = GlobalTracer.get().scopeManager().activate(span)) {
+      assert scope != null; // avoid unused warning
+
+      Set<CombinedState> dirtyStates = reachableSets.keySet().stream()
+          .map(v -> computeInitState(dfa, v))
+          .filter(Objects::nonNull)
+          .collect(Collectors.toSet());
+
+      Map<CombinedState, BDD> reachableIR = dirtyStates.stream()
+          .collect(Collectors.toMap(v -> v, v -> reachableSets.get(v.stateExpr)));
+
+      while (!dirtyStates.isEmpty()) {
+        Set<CombinedState> newDirtyStates = new HashSet<>();
+
+        dirtyStates.forEach(
+            dirtyState -> {
+              Map<StateExpr, Transition> dirtyStateEdges = edges.row(dirtyState.stateExpr);
+              if (dirtyStateEdges == null) {
+                // dirtyState has no edges
+                return;
+              }
+
+              BDD dirtyStateBDD = reachableIR.get(dirtyState);
+              dirtyStateEdges.forEach(
+                  (neighbor, edge) -> {
+                    BDD result = traverse.apply(edge, dirtyStateBDD);
+                    if (result.isZero()) {
+                      return;
+                    }
+
+                    // update DFA state according to input (if neighbor is a new node)
+                    DfaState newDfaState = dirtyState.dfaState;
+                    if (neighbor instanceof NodeAccept) {
+                      Optional<DfaState> resultDfaState = dfa.transit(dirtyState.dfaState, neighbor);
+
+                      // pruning if get null state (indicates invalid path)
+                      if (!resultDfaState.isPresent()) {
+                        return;
+                      } else {
+                        newDfaState = resultDfaState.get();
+                      }
+                    }
+
+                    // pruning if DFA reaches a bad final state
+                    if (newDfaState.isBad()) {
+                      return;
+                    }
+
+                    CombinedState newState = new CombinedState(neighbor, newDfaState);
+                    // update neighbor's reachable set
+                    BDD oldReach = reachableIR.get(newState);
+                    BDD newReach = oldReach == null ? result : oldReach.or(result);
+                    if (oldReach == null || !oldReach.equals(newReach)) {
+                      reachableIR.put(newState, newReach);
+                      newDirtyStates.add(newState);
+                    }
+                  });
+            });
+
+        dirtyStates = newDirtyStates;
+      }
+
+      // convert IR to reachable sets
+      Map<StateExpr, BDD> newReachableSets = reachableIR.entrySet().stream()
+          .filter(kv -> kv.getKey().dfaState.isAccepted())
+          .collect(Collectors.toMap(kv -> kv.getKey().stateExpr, Map.Entry::getValue, BDD::or));
+      reachableSets.clear();
+      reachableSets.putAll(newReachableSets);
     } finally {
       span.finish();
     }
