@@ -13,8 +13,12 @@ import com.google.common.collect.Tables;
 import io.opentracing.Scope;
 import io.opentracing.Span;
 import io.opentracing.util.GlobalTracer;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -35,6 +39,9 @@ import org.batfish.symbolic.IngressLocation;
 import org.batfish.symbolic.dfa.CombinedState;
 import org.batfish.symbolic.dfa.Dfa;
 import org.batfish.symbolic.dfa.DfaState;
+import org.batfish.symbolic.dfa.Nfa;
+import org.batfish.symbolic.dfa.NfaCombinedStateExpr;
+import org.batfish.symbolic.dfa.NfaState;
 import org.batfish.symbolic.state.NodeAccept;
 import org.batfish.symbolic.state.OriginateInterfaceLink;
 import org.batfish.symbolic.state.OriginateVrf;
@@ -188,6 +195,180 @@ public final class BDDReachabilityUtils {
           .collect(Collectors.toMap(kv -> kv.getKey().stateExpr, Map.Entry::getValue, BDD::or));
       reachableSets.clear();
       reachableSets.putAll(newReachableSets);
+    } finally {
+      span.finish();
+    }
+  }
+
+  private static Stream<NfaCombinedStateExpr> firstStep(Nfa<StateExpr> nfa, StateExpr location) {
+    List<NfaState> result;
+    if (location instanceof NodeAccept) {
+      result = nfa.transit(NfaState.startState(), location);
+    } else {
+      result = new ArrayList<>();
+      result.add(NfaState.startState());
+    }
+    return result.stream()
+        .map(nfaState -> new NfaCombinedStateExpr(location, nfaState));
+  }
+
+  private static Stream<NfaCombinedStateExpr> backwardFirstStep(Nfa<StateExpr> nfa,
+      NfaState acceptedState, StateExpr location) {
+    List<NfaState> result;
+    if (location instanceof NodeAccept) {
+      result = nfa.transitBackwards(acceptedState, location);
+    } else {
+      result = new ArrayList<>();
+      result.add(acceptedState);
+    }
+    return result.stream()
+        .map(nfaState -> new NfaCombinedStateExpr(location, nfaState));
+  }
+
+  @VisibleForTesting
+  static void nfaFixpoint(
+      Map<StateExpr, BDD> reachableSets,
+      Table<StateExpr, StateExpr, Transition> edges,
+      Nfa<StateExpr> nfa) {
+    Span span = GlobalTracer.get().buildSpan("BDDReachabilityAnalysis.nfaFixpoint").start();
+    try (Scope scope = GlobalTracer.get().scopeManager().activate(span)) {
+      assert scope != null; // avoid unused warning
+
+      Set<NfaCombinedStateExpr> dirtyStates = reachableSets.keySet().stream()
+          .flatMap(v -> firstStep(nfa, v))
+          .filter(Objects::nonNull)
+          .collect(Collectors.toSet());
+
+      Map<NfaCombinedStateExpr, BDD> fixpointIR = dirtyStates.stream()
+          .collect(Collectors.toMap(v -> v, v -> reachableSets.get(v.stateExpr)));
+
+      final BiFunction<Transition, BDD, BDD> forward = Transition::transitForward;
+      while (!dirtyStates.isEmpty()) {
+        Set<NfaCombinedStateExpr> newDirtyStates = new HashSet<>();
+
+        dirtyStates.forEach(
+            dirtyState -> {
+              Map<StateExpr, Transition> dirtyStateEdges = edges.row(dirtyState.stateExpr);
+              if (dirtyStateEdges == null) {
+                // dirtyState has no edges
+                return;
+              }
+
+              BDD dirtyStateBDD = fixpointIR.get(dirtyState);
+              dirtyStateEdges.forEach(
+                  (neighbor, edge) -> {
+                    BDD result = forward.apply(edge, dirtyStateBDD);
+                    if (result.isZero()) {
+                      return;
+                    }
+
+                    // transit NFA state (to avoid duplicated transitions on single device,
+                    // transit only at StateExpr subtype NodeAccept)
+                    List<NfaState> newNfaStates;
+                    if (neighbor instanceof NodeAccept) {
+                      newNfaStates = nfa.transit(dirtyState.nfaState, neighbor);
+                    } else {
+                      newNfaStates = new ArrayList<>();
+                      newNfaStates.add(dirtyState.nfaState);
+                    }
+
+                    // if newNfaStates is empty due to invalid path, the branch gets pruned
+                    newNfaStates.forEach(
+                        newNfaState -> {
+                          NfaCombinedStateExpr newState = new NfaCombinedStateExpr(neighbor,
+                              newNfaState);
+                          // update neighbor's reachable set
+                          BDD oldReach = fixpointIR.get(newState);
+                          BDD newReach = oldReach == null ? result : oldReach.or(result);
+                          if (oldReach == null || !oldReach.equals(newReach)) {
+                            fixpointIR.put(newState, newReach);
+                            newDirtyStates.add(newState);
+                          }
+                        }
+                    );
+                  });
+            });
+
+        dirtyStates = newDirtyStates;
+      }
+
+      // keep BDD with accepted states only
+      Map<NfaCombinedStateExpr, BDD> acceptedFinalSets = fixpointIR.entrySet().stream()
+          .filter(kv -> kv.getKey().nfaState.isAccepted())
+          .collect(Collectors.toMap(Entry::getKey, Entry::getValue, BDD::or));
+
+      // propagate accepted final BDDs backwards
+      final BiFunction<Transition, BDD, BDD> backward = Transition::transitBackward;
+      Table<StateExpr, StateExpr, Transition> backwardEdges = transposeAndMaterialize(edges);
+
+      Map<NfaCombinedStateExpr, BDD> acceptedSets = new HashMap<>();
+      acceptedFinalSets.forEach(
+          (acceptedState, set) -> {
+            backwardFirstStep(nfa, acceptedState.nfaState, acceptedState.stateExpr)
+                .forEach(
+                    steppedState -> {
+                      acceptedSets.put(steppedState, set);
+                    }
+                );
+          }
+      );
+
+      dirtyStates = ImmutableSet.copyOf(acceptedSets.keySet());
+      while (!dirtyStates.isEmpty()) {
+        Set<NfaCombinedStateExpr> newDirtyStates = new HashSet<>();
+
+        dirtyStates.forEach(
+            dirtyState -> {
+              Map<StateExpr, Transition> dirtyStateEdges = backwardEdges.row(dirtyState.stateExpr);
+              if (dirtyStateEdges == null) {
+                // dirtyState has no edges
+                return;
+              }
+
+              BDD dirtyStateBDD = acceptedSets.get(dirtyState);
+              dirtyStateEdges.forEach(
+                  (neighbor, edge) -> {
+                    BDD result = backward.apply(edge, dirtyStateBDD);
+                    if (result.isZero()) {
+                      return;
+                    }
+
+                    // transit NFA state (to avoid duplicated transitions on single device,
+                    // transit only at StateExpr subtype NodeAccept)
+                    List<NfaState> newNfaStates;
+                    if (neighbor instanceof NodeAccept) {
+                      newNfaStates = nfa.transitBackwards(dirtyState.nfaState, neighbor);
+                    } else {
+                      newNfaStates = new ArrayList<>();
+                      newNfaStates.add(dirtyState.nfaState);
+                    }
+
+                    newNfaStates.forEach(
+                        newNfaState -> {
+                          NfaCombinedStateExpr newState = new NfaCombinedStateExpr(neighbor,
+                              newNfaState);
+                          // update neighbor's reachable set
+                          BDD oldReach = acceptedSets.get(newState);
+                          BDD newReach = oldReach == null ? result : oldReach.or(result);
+                          if (oldReach == null || !oldReach.equals(newReach)) {
+                            acceptedSets.put(newState, newReach);
+                            newDirtyStates.add(newState);
+                          }
+                        }
+                    );
+                  });
+            });
+
+        dirtyStates = newDirtyStates;
+      }
+
+      // converting to result format, drop NFA states in entries
+      Map<StateExpr, BDD> resultReachableSets = acceptedSets.entrySet().stream()
+          .collect(Collectors.toMap(kv -> kv.getKey().stateExpr, Map.Entry::getValue, BDD::or));
+
+      // store result
+      reachableSets.clear();
+      reachableSets.putAll(resultReachableSets);
     } finally {
       span.finish();
     }

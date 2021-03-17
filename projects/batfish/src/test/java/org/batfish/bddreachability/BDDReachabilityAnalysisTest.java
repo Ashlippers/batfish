@@ -2,6 +2,7 @@ package org.batfish.bddreachability;
 
 import static org.batfish.bddreachability.BDDReachabilityUtils.computeForwardEdgeTable;
 import static org.batfish.bddreachability.BDDReachabilityUtils.fixpoint;
+import static org.batfish.bddreachability.BDDReachabilityUtils.nfaFixpoint;
 import static org.batfish.bddreachability.BDDReachabilityUtils.prunedFixpoint;
 import static org.batfish.bddreachability.BDDReachabilityUtils.toIngressLocation;
 import static org.batfish.bddreachability.TestNetwork.DST_PREFIX_1;
@@ -49,6 +50,8 @@ import org.batfish.specifier.InterfaceLocation;
 import org.batfish.specifier.IpSpaceAssignment;
 import org.batfish.symbolic.dfa.Dfa;
 import org.batfish.symbolic.dfa.DfaState;
+import org.batfish.symbolic.dfa.Nfa;
+import org.batfish.symbolic.dfa.NfaState;
 import org.batfish.symbolic.state.Accept;
 import org.batfish.symbolic.state.DropNoRoute;
 import org.batfish.symbolic.state.InterfaceAccept;
@@ -712,6 +715,57 @@ public final class BDDReachabilityAnalysisTest {
       Map<StateExpr, BDD> forwardReachability = new HashMap<>();
       forwardReachability.put(c, start);
       prunedFixpoint(forwardReachability, forwardEdges, Transition::transitForward, dfa);
+      assertThat(forwardReachability, equalTo(ImmutableMap.of()));
+    }
+  }
+
+  @Test
+  public void testNfaFixpoint() {
+    StateExpr a = new NodeAccept("A");
+    StateExpr b = new NodeAccept("B");
+    StateExpr c = new NodeAccept("C");
+
+    BDD start = PKT.getSrcPort().value(1);
+    BDD bddAB = PKT.getDstIp().value(1);
+    BDD bddBC = PKT.getSrcIp().value(1);
+
+    Edge edgeAB = new Edge(a, b, bddAB);
+    Edge edgeBC = new Edge(b, c, bddBC);
+
+    Table<StateExpr, StateExpr, Transition> forwardEdges =
+        computeForwardEdgeTable(ImmutableList.of(edgeAB, edgeBC));
+    // Table<StateExpr, StateExpr, Transition> reverseEdges = Tables.transpose(forwardEdges);
+
+    Nfa<StateExpr> nfa = new Nfa<>();
+    NfaState atA = new NfaState(1);
+    NfaState atB = new NfaState(2);
+    NfaState atC = new NfaState(3, true);
+    nfa.states.add(atA);
+    nfa.states.add(atB);
+    nfa.states.add(atC);
+    nfa.edges.put(NfaState.startState(), atA, a);
+    nfa.edges.put(atA, atB, b);
+    nfa.edges.put(atB, atC, c);
+
+    // forward from a
+    {
+      Map<StateExpr, BDD> forwardReachability = new HashMap<>();
+      forwardReachability.put(a, start);
+      nfaFixpoint(forwardReachability, forwardEdges, nfa);
+      assertThat(
+          forwardReachability,
+          equalTo(
+              ImmutableMap.of(
+                  a, start, //
+                  b, start.and(bddAB), //
+                  c, start.and(bddAB).and(bddBC))));
+    }
+
+    // forward from c
+    {
+      Map<StateExpr, BDD> forwardReachability = new HashMap<>();
+      forwardReachability.put(c, start);
+      nfaFixpoint(forwardReachability, forwardEdges, nfa);
       assertThat(forwardReachability, equalTo(ImmutableMap.of()));
     }
   }
