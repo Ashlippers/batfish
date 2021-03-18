@@ -200,10 +200,10 @@ public final class BDDReachabilityUtils {
     }
   }
 
-  private static Stream<NfaCombinedStateExpr> firstStep(Nfa<StateExpr> nfa, StateExpr location) {
+  private static Stream<NfaCombinedStateExpr> firstStep(Nfa<String> nfa, StateExpr location) {
     List<NfaState> result;
     if (location instanceof NodeAccept) {
-      result = nfa.transit(NfaState.startState(), location);
+      result = nfa.transit(NfaState.startState(), ((NodeAccept) location).getHostname());
     } else {
       result = new ArrayList<>();
       result.add(NfaState.startState());
@@ -212,11 +212,11 @@ public final class BDDReachabilityUtils {
         .map(nfaState -> new NfaCombinedStateExpr(location, nfaState));
   }
 
-  private static Stream<NfaCombinedStateExpr> backwardFirstStep(Nfa<StateExpr> nfa,
+  private static Stream<NfaCombinedStateExpr> backwardFirstStep(Nfa<String> nfa,
       NfaState acceptedState, StateExpr location) {
     List<NfaState> result;
     if (location instanceof NodeAccept) {
-      result = nfa.transitBackwards(acceptedState, location);
+      result = nfa.transitBackwards(acceptedState, ((NodeAccept) location).getHostname());
     } else {
       result = new ArrayList<>();
       result.add(acceptedState);
@@ -229,7 +229,7 @@ public final class BDDReachabilityUtils {
   static void nfaFixpoint(
       Map<StateExpr, BDD> reachableSets,
       Table<StateExpr, StateExpr, Transition> edges,
-      Nfa<StateExpr> nfa) {
+      Nfa<String> nfa) {
     Span span = GlobalTracer.get().buildSpan("BDDReachabilityAnalysis.nfaFixpoint").start();
     try (Scope scope = GlobalTracer.get().scopeManager().activate(span)) {
       assert scope != null; // avoid unused warning
@@ -266,7 +266,7 @@ public final class BDDReachabilityUtils {
                     // transit only at StateExpr subtype NodeAccept)
                     List<NfaState> newNfaStates;
                     if (neighbor instanceof NodeAccept) {
-                      newNfaStates = nfa.transit(dirtyState.nfaState, neighbor);
+                      newNfaStates = nfa.transit(dirtyState.nfaState, ((NodeAccept) neighbor).getHostname());
                     } else {
                       newNfaStates = new ArrayList<>();
                       newNfaStates.add(dirtyState.nfaState);
@@ -337,7 +337,7 @@ public final class BDDReachabilityUtils {
                     // transit only at StateExpr subtype NodeAccept)
                     List<NfaState> newNfaStates;
                     if (neighbor instanceof NodeAccept) {
-                      newNfaStates = nfa.transitBackwards(dirtyState.nfaState, neighbor);
+                      newNfaStates = nfa.transitBackwards(dirtyState.nfaState, ((NodeAccept) neighbor).getHostname());
                     } else {
                       newNfaStates = new ArrayList<>();
                       newNfaStates.add(dirtyState.nfaState);

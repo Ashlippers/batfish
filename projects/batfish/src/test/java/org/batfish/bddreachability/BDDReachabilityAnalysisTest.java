@@ -736,16 +736,16 @@ public final class BDDReachabilityAnalysisTest {
         computeForwardEdgeTable(ImmutableList.of(edgeAB, edgeBC));
     // Table<StateExpr, StateExpr, Transition> reverseEdges = Tables.transpose(forwardEdges);
 
-    Nfa<StateExpr> nfa = new Nfa<>();
+    Nfa<String> nfa = new Nfa<String>();
     NfaState atA = new NfaState(1);
     NfaState atB = new NfaState(2);
     NfaState atC = new NfaState(3, true);
     nfa.states.add(atA);
     nfa.states.add(atB);
     nfa.states.add(atC);
-    nfa.edges.put(NfaState.startState(), atA, a);
-    nfa.edges.put(atA, atB, b);
-    nfa.edges.put(atB, atC, c);
+    nfa.edges.put(NfaState.startState(), atA, "A");
+    nfa.edges.put(atA, atB, "B");
+    nfa.edges.put(atB, atC, "C");
 
     // forward from a
     {
