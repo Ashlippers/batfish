@@ -200,7 +200,7 @@ public final class BDDReachabilityUtils {
     }
   }
 
-  private static Stream<NfaCombinedStateExpr> firstStep(Nfa<String> nfa, StateExpr location) {
+  private static Stream<NfaCombinedStateExpr> firstStep(Nfa nfa, StateExpr location) {
     List<NfaState> result;
     if (location instanceof NodeAccept) {
       result = nfa.transit(NfaState.startState(), ((NodeAccept) location).getHostname());
@@ -212,7 +212,7 @@ public final class BDDReachabilityUtils {
         .map(nfaState -> new NfaCombinedStateExpr(location, nfaState));
   }
 
-  private static Stream<NfaCombinedStateExpr> backwardFirstStep(Nfa<String> nfa,
+  private static Stream<NfaCombinedStateExpr> backwardFirstStep(Nfa nfa,
       NfaState acceptedState, StateExpr location) {
     List<NfaState> result;
     if (location instanceof NodeAccept) {
@@ -229,7 +229,7 @@ public final class BDDReachabilityUtils {
   static void nfaFixpoint(
       Map<StateExpr, BDD> reachableSets,
       Table<StateExpr, StateExpr, Transition> edges,
-      Nfa<String> nfa) {
+      Nfa nfa) {
     Span span = GlobalTracer.get().buildSpan("BDDReachabilityAnalysis.nfaFixpoint").start();
     try (Scope scope = GlobalTracer.get().scopeManager().activate(span)) {
       assert scope != null; // avoid unused warning

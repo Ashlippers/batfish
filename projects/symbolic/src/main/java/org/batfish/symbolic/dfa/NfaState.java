@@ -5,7 +5,7 @@ import java.util.Objects;
 public final class NfaState {
   private final int _id;
 
-  private final boolean _isAccepted;
+  private boolean _isAccepted;
 
   public NfaState(int id) {
     _id = id;
@@ -25,6 +25,10 @@ public final class NfaState {
     return _isAccepted;
   }
 
+  public void setAccepted() { _isAccepted = true; }
+
+  public int getId() { return _id; }
+
   @Override
   public boolean equals(Object o) {
     if (this == o) {
@@ -43,7 +47,7 @@ public final class NfaState {
   @Override
   public String toString() {
     if (_isAccepted) {
-      return String.format("NFA@%d[Accepted]", _id);
+      return String.format("NFA@%d[Acc]", _id);
     } else {
       return String.format("NFA@%d", _id);
     }

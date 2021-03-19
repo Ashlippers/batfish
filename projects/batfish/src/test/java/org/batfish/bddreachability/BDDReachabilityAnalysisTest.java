@@ -52,6 +52,8 @@ import org.batfish.symbolic.dfa.Dfa;
 import org.batfish.symbolic.dfa.DfaState;
 import org.batfish.symbolic.dfa.Nfa;
 import org.batfish.symbolic.dfa.NfaState;
+import org.batfish.symbolic.dfa.NfaUtils;
+import org.batfish.symbolic.dfa.SingleNodeTerm;
 import org.batfish.symbolic.state.Accept;
 import org.batfish.symbolic.state.DropNoRoute;
 import org.batfish.symbolic.state.InterfaceAccept;
@@ -736,16 +738,18 @@ public final class BDDReachabilityAnalysisTest {
         computeForwardEdgeTable(ImmutableList.of(edgeAB, edgeBC));
     // Table<StateExpr, StateExpr, Transition> reverseEdges = Tables.transpose(forwardEdges);
 
-    Nfa<String> nfa = new Nfa<String>();
-    NfaState atA = new NfaState(1);
-    NfaState atB = new NfaState(2);
-    NfaState atC = new NfaState(3, true);
-    nfa.states.add(atA);
-    nfa.states.add(atB);
-    nfa.states.add(atC);
-    nfa.edges.put(NfaState.startState(), atA, "A");
-    nfa.edges.put(atA, atB, "B");
-    nfa.edges.put(atB, atC, "C");
+    String pathSpec = "^<A><B><C>$";
+    Nfa nfa = NfaUtils.compile(pathSpec);
+    // Nfa nfa = new Nfa();
+    //NfaState atA = new NfaState(1);
+    //NfaState atB = new NfaState(2);
+    //NfaState atC = new NfaState(3, true);
+    //nfa.states.add(atA);
+    //nfa.states.add(atB);
+    //nfa.states.add(atC);
+    //nfa.edges.put(NfaState.startState(), atA, new SingleNodeTerm("A"));
+    //nfa.edges.put(atA, atB, new SingleNodeTerm("B"));
+    //nfa.edges.put(atB, atC, new SingleNodeTerm("C"));
 
     // forward from a
     {
@@ -756,8 +760,8 @@ public final class BDDReachabilityAnalysisTest {
           forwardReachability,
           equalTo(
               ImmutableMap.of(
-                  a, start, //
-                  b, start.and(bddAB), //
+                  a, start.and(bddAB).and(bddBC), //
+                  b, start.and(bddAB).and(bddBC), //
                   c, start.and(bddAB).and(bddBC))));
     }
 
